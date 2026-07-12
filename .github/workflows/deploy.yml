@@ -1,0 +1,88 @@
+name: Deploy BoneHost
+# All machines are reached over YOUR TAILNET: the runner joins as an ephemeral
+# node via a Tailscale OAuth client, SSHes to MagicDNS names, deploys, and
+# applies the UFW policy — every push, automatically.
+#
+# One-time setup:
+#   1. Tailscale admin console → OAuth clients → create one with scope
+#      "auth_keys" and the tag `tag:ci` (add `"tag:ci": ["autogroup:admin"]`
+#      to tagOwners in your ACL). Save as secrets TS_OAUTH_CLIENT_ID /
+#      TS_OAUTH_SECRET.
+#   2. Per machine: PANEL_TS_HOST / NODE_RYZEN_TS_HOST (MagicDNS name, e.g.
+#      `minipc` / `ryzen`), *_USER, *_SSH_KEY. The deploy user needs the
+#      docker group plus one sudoers line for the firewall script (README §5).
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      target:
+        description: What to deploy
+        type: choice
+        default: everything
+        options: [everything, panel-only, node-ryzen-only]
+
+concurrency:
+  group: deploy
+  cancel-in-progress: false
+
+jobs:
+  panel:
+    name: Head unit (mini PC)
+    if: ${{ github.event_name == 'push' || inputs.target == 'everything' || inputs.target == 'panel-only' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Join the tailnet
+        uses: tailscale/github-action@v3
+        with:
+          oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
+          oauth-secret: ${{ secrets.TS_OAUTH_SECRET }}
+          tags: tag:ci
+      - name: Deploy panel + firewall
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.PANEL_TS_HOST }}
+          username: ${{ secrets.PANEL_USER }}
+          key: ${{ secrets.PANEL_SSH_KEY }}
+          script_stop: true
+          script: |
+            cd /opt/bonehost
+            git fetch origin main
+            git reset --hard origin/main
+            docker compose -f docker-compose.panel.yml up -d --build
+            sudo /opt/bonehost/scripts/firewall-panel.sh
+            docker image prune -f
+
+  node-ryzen:
+    name: Game node · ryzen (7950X)
+    if: ${{ github.event_name == 'push' || inputs.target == 'everything' || inputs.target == 'node-ryzen-only' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Join the tailnet
+        uses: tailscale/github-action@v3
+        with:
+          oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
+          oauth-secret: ${{ secrets.TS_OAUTH_SECRET }}
+          tags: tag:ci
+      - name: Deploy agent + game image + firewall
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.NODE_RYZEN_TS_HOST }}
+          username: ${{ secrets.NODE_RYZEN_USER }}
+          key: ${{ secrets.NODE_RYZEN_SSH_KEY }}
+          script_stop: true
+          script: |
+            cd /opt/bonehost
+            git fetch origin main
+            git reset --hard origin/main
+            docker build -t bonehost/cs2:latest images/cs2
+            docker compose -f docker-compose.node.yml up -d --build
+            sudo /opt/bonehost/scripts/firewall-node.sh
+            docker image prune -f
+
+  # ── scaling ──
+  # New node "zeus": copy the node-ryzen job (rename, swap the three secrets,
+  # add `node-zeus-only` to the dispatch choices), add the node block to
+  # config.json, set NODE_TOKEN_ZEUS on the panel + AGENT_TOKEN/TAILSCALE_IP
+  # in the new box's .env. Push. Done.
