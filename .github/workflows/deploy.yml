@@ -1,16 +1,19 @@
 name: Deploy BoneHost
-# All machines are reached over YOUR TAILNET: the runner joins as an ephemeral
-# node via a Tailscale OAuth client, SSHes to MagicDNS names, deploys, and
-# applies the UFW policy — every push, automatically.
+# Every machine is reached over YOUR TAILNET. The runner joins as an ephemeral
+# node, then SSHes natively (NOT via a containerized action — Docker containers
+# on the runner don't inherit Tailscale's MagicDNS resolver, so names like
+# `ryzen` would fail to resolve inside them).
 #
 # One-time setup:
-#   1. Tailscale admin console → OAuth clients → create one with scope
-#      "auth_keys" and the tag `tag:ci` (add `"tag:ci": ["autogroup:admin"]`
-#      to tagOwners in your ACL). Save as secrets TS_OAUTH_CLIENT_ID /
-#      TS_OAUTH_SECRET.
-#   2. Per machine: PANEL_TS_HOST / NODE_RYZEN_TS_HOST (MagicDNS name, e.g.
-#      `minipc` / `ryzen`), *_USER, *_SSH_KEY. The deploy user needs the
-#      docker group plus one sudoers line for the firewall script (README §5).
+#   1. Tailscale ACL → tagOwners: add  "tag:ci": ["autogroup:admin"]
+#   2. Tailscale admin → OAuth clients → scope `auth_keys`, tag `tag:ci`
+#      → repo secrets TS_OAUTH_CLIENT_ID / TS_OAUTH_SECRET
+#   3. Per machine: PANEL_TS_HOST / PANEL_USER / PANEL_SSH_KEY and
+#      NODE_RYZEN_TS_HOST / NODE_RYZEN_USER / NODE_RYZEN_SSH_KEY.
+#      *_TS_HOST accepts a MagicDNS name (`ryzen`) OR a 100.x Tailscale IP.
+#      *_SSH_KEY is the PRIVATE key; its public half lives in the machine's
+#      ~/.ssh/authorized_keys. The user needs the docker group + the sudoers
+#      line for the firewall script (README §1).
 
 on:
   push:
@@ -39,20 +42,29 @@ jobs:
           oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
           oauth-secret: ${{ secrets.TS_OAUTH_SECRET }}
           tags: tag:ci
+
       - name: Deploy panel + firewall
-        uses: appleboy/ssh-action@v1.0.3
-        with:
-          host: ${{ secrets.PANEL_TS_HOST }}
-          username: ${{ secrets.PANEL_USER }}
-          key: ${{ secrets.PANEL_SSH_KEY }}
-          script_stop: true
-          script: |
+        env:
+          SSH_KEY: ${{ secrets.PANEL_SSH_KEY }}
+          SSH_HOST: ${{ secrets.PANEL_TS_HOST }}
+          SSH_USER: ${{ secrets.PANEL_USER }}
+        run: |
+          test -n "$SSH_HOST" || { echo "::error::PANEL_TS_HOST secret is empty"; exit 1; }
+          test -n "$SSH_USER" || { echo "::error::PANEL_USER secret is empty"; exit 1; }
+          test -n "$SSH_KEY"  || { echo "::error::PANEL_SSH_KEY secret is empty"; exit 1; }
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          printf '%s\n' "$SSH_KEY" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          ssh-keyscan -H "$SSH_HOST" >> ~/.ssh/known_hosts 2>/dev/null || true
+          ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=accept-new \
+              -o ConnectTimeout=20 "$SSH_USER@$SSH_HOST" bash -euo pipefail <<'REMOTE'
             cd /opt/bonehost
             git fetch origin main
             git reset --hard origin/main
             docker compose -f docker-compose.panel.yml up -d --build
             sudo /opt/bonehost/scripts/firewall-panel.sh
             docker image prune -f
+          REMOTE
 
   node-ryzen:
     name: Game node · ryzen (7950X)
@@ -65,14 +77,22 @@ jobs:
           oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
           oauth-secret: ${{ secrets.TS_OAUTH_SECRET }}
           tags: tag:ci
+
       - name: Deploy agent + game image + firewall
-        uses: appleboy/ssh-action@v1.0.3
-        with:
-          host: ${{ secrets.NODE_RYZEN_TS_HOST }}
-          username: ${{ secrets.NODE_RYZEN_USER }}
-          key: ${{ secrets.NODE_RYZEN_SSH_KEY }}
-          script_stop: true
-          script: |
+        env:
+          SSH_KEY: ${{ secrets.NODE_RYZEN_SSH_KEY }}
+          SSH_HOST: ${{ secrets.NODE_RYZEN_TS_HOST }}
+          SSH_USER: ${{ secrets.NODE_RYZEN_USER }}
+        run: |
+          test -n "$SSH_HOST" || { echo "::error::NODE_RYZEN_TS_HOST secret is empty"; exit 1; }
+          test -n "$SSH_USER" || { echo "::error::NODE_RYZEN_USER secret is empty"; exit 1; }
+          test -n "$SSH_KEY"  || { echo "::error::NODE_RYZEN_SSH_KEY secret is empty"; exit 1; }
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          printf '%s\n' "$SSH_KEY" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          ssh-keyscan -H "$SSH_HOST" >> ~/.ssh/known_hosts 2>/dev/null || true
+          ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=accept-new \
+              -o ConnectTimeout=20 "$SSH_USER@$SSH_HOST" bash -euo pipefail <<'REMOTE'
             cd /opt/bonehost
             git fetch origin main
             git reset --hard origin/main
@@ -80,6 +100,7 @@ jobs:
             docker compose -f docker-compose.node.yml up -d --build
             sudo /opt/bonehost/scripts/firewall-node.sh
             docker image prune -f
+          REMOTE
 
   # ── scaling ──
   # New node "zeus": copy the node-ryzen job (rename, swap the three secrets,
