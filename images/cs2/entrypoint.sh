@@ -1,8 +1,9 @@
 #!/bin/bash
-# BoneHost CS2 entrypoint — runs as user `steam`.
+# BoneHost CS2 entrypoint.
 # Env contract (set by the panel): SERVER_ID GAME_PORT MAXPLAYERS MAP GAME_TYPE GAME_MODE
 #   GSLT UPDATE_ON_START INSTALL_METAMOD INSTALL_CSSHARP INSTALL_FAKERCON INSTALL_SIMPLEADMIN
 #   RCON_PASSWORD MM_LATEST_INDEX CSS_REPO CSS_ASSET_MATCH PLUGINS_JSON
+#   SSH_PORT SSH_PASSWORD  (per-container SSH/SFTP for the subscriber)
 #   FORCE_ADDON_UPDATE ADDON_UPDATE_METAMOD ADDON_UPDATE_CSSHARP
 set -euo pipefail
 
@@ -10,6 +11,53 @@ DATA=/home/steam/cs2data
 GAME="$DATA/game/csgo"
 STEAMCMD=/home/steam/steamcmd/steamcmd.sh
 log() { echo "[bonehost:$SERVER_ID] $*"; }
+
+# ---------- 0. per-container SSH, then drop root ----------
+# The container IS the jail: subscribers SSH into their own game container,
+# never the host. sshd is bootstrapped as root (password + host keys need it),
+# after which this script re-execs itself as `steam` for everything else.
+if [[ "$(id -u)" == "0" ]]; then
+  if [[ -n "${SSH_PORT:-}" && -n "${SSH_PASSWORD:-}" ]]; then
+    echo "steam:${SSH_PASSWORD}" | chpasswd
+
+    # Host keys persist in the data volume so fingerprints survive recreation.
+    HK="$DATA/.ssh-host"
+    mkdir -p "$HK"
+    for t in ed25519 rsa; do
+      [[ -f "$HK/ssh_host_${t}_key" ]] || ssh-keygen -q -t "$t" -N '' -f "$HK/ssh_host_${t}_key"
+    done
+    chown -R root:root "$HK"; chmod 600 "$HK"/ssh_host_*_key
+
+    # Subscriber-supplied public key (managed from the dashboard)
+    if [[ -f "$DATA/panel-cfg/authorized_keys" ]]; then
+      mkdir -p /home/steam/.ssh
+      cp -f "$DATA/panel-cfg/authorized_keys" /home/steam/.ssh/authorized_keys
+      chown -R steam:steam /home/steam/.ssh
+      chmod 700 /home/steam/.ssh; chmod 600 /home/steam/.ssh/authorized_keys
+    fi
+
+    cat > /etc/ssh/sshd_config.d/bonehost.conf <<SSHEOF
+Port ${SSH_PORT}
+HostKey ${HK}/ssh_host_ed25519_key
+HostKey ${HK}/ssh_host_rsa_key
+AllowUsers steam
+PermitRootLogin no
+PasswordAuthentication yes
+PubkeyAuthentication yes
+MaxAuthTries 4
+LoginGraceTime 30
+ClientAliveInterval 120
+X11Forwarding no
+AllowTcpForwarding no
+AllowAgentForwarding no
+Subsystem sftp internal-sftp
+SSHEOF
+    /usr/sbin/sshd -e
+    log "sshd up on :${SSH_PORT} (user steam, container-jailed)"
+  fi
+  chown steam:steam "$DATA" 2>/dev/null || true
+  exec setpriv --reuid=steam --regid=steam --init-groups "$0" "$@"
+fi
 
 # ---------- 1. install / update CS2 ----------
 if [[ ! -x "$DATA/game/bin/linuxsteamrt64/cs2" || "${UPDATE_ON_START:-1}" == "1" ]]; then

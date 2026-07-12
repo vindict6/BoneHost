@@ -3,53 +3,8 @@
     "name": "BoneHost",
     "url": "https://bonehost.org",
     "port": 8080,
-    "data_root": "/srv/bonehost"
-  },
-  "cpu": {
-    "comment": "Ryzen 9 7950X: 16 cores / 32 threads. Logical thread N and N+16 are SMT siblings. Threads listed in `pool` are the ONLY threads game containers may use; everything else stays reserved for the OS, the panel, SFTP and MariaDB.",
-    "pool": [
-      4,
-      20,
-      5,
-      21,
-      6,
-      22,
-      7,
-      23,
-      8,
-      24,
-      9,
-      25,
-      10,
-      26,
-      11,
-      27,
-      12,
-      28,
-      13,
-      29,
-      14,
-      30,
-      15,
-      31
-    ],
-    "smt_sibling_offset": 16,
-    "threads_per_server": 4,
-    "pin_sibling_pairs": true
-  },
-  "memory": {
-    "total_mb": 65536,
-    "host_reserved_mb": 12288,
-    "per_server_mb": 8192,
-    "swap": "disabled (MemorySwap is pinned to Memory limit)"
-  },
-  "network": {
-    "game_port_range": [
-      27015,
-      27114
-    ],
-    "sftp_port": 2022,
-    "public_host": "bonehost.org"
+    "data_root": "/srv/bonehost-panel",
+    "comment": "The panel is the head unit: web UI, API, SQLite, billing, schedulers. It holds no game files and needs no docker.sock \u2014 it drives nodes over their agent APIs."
   },
   "cs2": {
     "image": "bonehost/cs2:latest",
@@ -117,5 +72,62 @@
   },
   "updates": {
     "scheduler_timezone": "America/Denver"
-  }
+  },
+  "nodes": [
+    {
+      "id": "ryzen",
+      "name": "Ryzen 7950X",
+      "comment": "The head unit (panel on the mini PC) drives this box through the agent. To scale, copy this block, change id/agent_url/public_host, set NODE_TOKEN_<ID> in the panel .env, and deploy the agent stack on the new machine.",
+      "agent_url": "http://ryzen.your-tailnet.ts.net:9090",
+      "public_host": "play.bonehost.org",
+      "game_port_range": [
+        27015,
+        27999
+      ],
+      "cpu": {
+        "comment": "16c/32t: logical thread N and N+16 are SMT siblings. Only pool threads are ever given to game containers; the rest stay reserved for the OS/agent/MariaDB/SFTP.",
+        "pool": [
+          4,
+          20,
+          5,
+          21,
+          6,
+          22,
+          7,
+          23,
+          8,
+          24,
+          9,
+          25,
+          10,
+          26,
+          11,
+          27,
+          12,
+          28,
+          13,
+          29,
+          14,
+          30,
+          15,
+          31
+        ],
+        "smt_sibling_offset": 16,
+        "threads_per_server": 4,
+        "pin_sibling_pairs": true
+      },
+      "memory": {
+        "total_mb": 65536,
+        "host_reserved_mb": 12288,
+        "per_server_mb": 8192,
+        "swap": "disabled (MemorySwap pinned to Memory limit)"
+      },
+      "agent_url_comment": "The node's Tailscale MagicDNS name (or 100.x.y.z IP). The agent only listens on the tailnet.",
+      "ssh_port_range": [
+        28000,
+        29000
+      ],
+      "ports_comment": "Both ranges sit inside 27015-29000, the only public ports UFW opens on a node (scripts/firewall-node.sh)."
+    }
+  ]
 }

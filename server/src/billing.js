@@ -4,7 +4,7 @@ import path from 'node:path';
 import cron from 'node-cron';
 import { cfg, env, priceCents, periodMs, ledgerDir } from './config.js';
 import { db, audit } from './db.js';
-import { stopServer, startServer } from './docker.js';
+import { stopServer, startServer } from './nodes.js';
 
 /*
  * Billing providers

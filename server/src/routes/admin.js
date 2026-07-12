@@ -1,12 +1,13 @@
 import { Router } from 'express';
 import { requireAuth, requireAdmin } from '../auth.js';
 import { db, audit } from '../db.js';
-import { hostUsage } from '../allocator.js';
+import { nodeUsage } from '../allocator.js';
+import { nodes, nodeHealth } from '../nodes.js';
 import { mintInvite } from './auth.js';
 import { transactionsCsv, confirmTransaction, voidTransaction } from '../billing.js';
-import { startServer, stopServer, containerState, syncSftp } from '../docker.js';
+import { startServer, stopServer, restartServer, containerState, rconExec } from '../nodes.js';
 import { allLiveServers, destroyServer } from '../cs2.js';
-import { latestVersions } from '../updates.js';
+import { latestVersions, runUpdatePass } from '../updates.js';
 
 export const adminRoutes = Router();
 adminRoutes.use(requireAuth, requireAdmin);
@@ -17,11 +18,13 @@ adminRoutes.get('/overview', wrap(async (req, res) => {
   const servers = allLiveServers();
   const states = await Promise.all(servers.map(s => containerState(s).catch(() => ({ exists: false, running: false }))));
   const subs = db.prepare(`SELECT s.*, u.email FROM subscriptions s JOIN users u ON u.id=s.user_id WHERE s.status != 'canceled'`).all();
+  const nodeList = nodes();
+  const health = await Promise.all(nodeList.map(n => nodeHealth(n)));
   res.json({
-    host: hostUsage(),
+    nodes: nodeList.map((n, i) => ({ ...nodeUsage(n.id), health: health[i] })),
     versions: await latestVersions(),
     servers: servers.map((s, i) => ({
-      id: s.id, name: s.name, owner_id: s.owner_id, slots: s.slots, game_port: s.game_port,
+      id: s.id, name: s.name, owner_id: s.owner_id, node_id: s.node_id, slots: s.slots, game_port: s.game_port,
       cpuset: s.cpuset, memory_mb: s.memory_mb, status: s.status, suspended_reason: s.suspended_reason,
       state: states[i],
       subscription: subs.find(x => x.server_id === s.id) || null,
@@ -91,10 +94,60 @@ adminRoutes.delete('/servers/:id', wrap(async (req, res) => {
   res.json({ ok: true });
 }));
 
-adminRoutes.post('/sftp/resync', wrap(async (req, res) => {
-  await syncSftp(allLiveServers());
-  audit(req.user.id, req.ip, 'admin.sftp_resync');
-  res.json({ ok: true });
+/**
+ * Fleet actions — the "manage everything from my end" endpoint.
+ * body: {
+ *   action: 'start'|'stop'|'restart'|'update'|'rcon',
+ *   server_ids: [...] | 'all',
+ *   node_id?: only servers on this node,
+ *   opts?: { metamod, cssharp }   (update passes),
+ *   command?: 'say hi'            (broadcast rcon),
+ * }
+ * Runs across the selection with per-server results, fully audited.
+ */
+adminRoutes.post('/fleet', wrap(async (req, res) => {
+  const b = req.body || {};
+  const action = String(b.action || '');
+  if (!['start', 'stop', 'restart', 'update', 'rcon'].includes(action)) throw new Error('Unknown fleet action.');
+  if (action === 'rcon' && !String(b.command || '').trim()) throw new Error('Broadcast needs a command.');
+
+  let servers = allLiveServers();
+  if (b.node_id) servers = servers.filter(s => s.node_id === b.node_id);
+  if (Array.isArray(b.server_ids)) {
+    const want = new Set(b.server_ids);
+    servers = servers.filter(s => want.has(s.id));
+  }
+  if (!servers.length) throw new Error('Selection matched no servers.');
+
+  audit(req.user.id, req.ip, `admin.fleet_${action}`, b.node_id || 'fleet',
+    { count: servers.length, ids: servers.map(s => s.id), opts: b.opts, command: b.command });
+
+  const results = [];
+  for (const s of servers) {
+    try {
+      if (action === 'start') {
+        if (s.status === 'suspended') throw new Error('suspended — skipped');
+        await startServer(s);
+        db.prepare(`UPDATE servers SET status='running' WHERE id=?`).run(s.id);
+        results.push({ id: s.id, ok: true, detail: 'started' });
+      } else if (action === 'stop') {
+        await stopServer(s);
+        if (s.status !== 'suspended') db.prepare(`UPDATE servers SET status='stopped' WHERE id=?`).run(s.id);
+        results.push({ id: s.id, ok: true, detail: 'stopped' });
+      } else if (action === 'restart') {
+        await restartServer(s);
+        results.push({ id: s.id, ok: true, detail: 'restarted' });
+      } else if (action === 'update') {
+        await runUpdatePass(s, { metamod: !!b.opts?.metamod, cssharp: !!b.opts?.cssharp }, req.user.id);
+        db.prepare(`UPDATE servers SET status='running' WHERE id=?`).run(s.id);
+        results.push({ id: s.id, ok: true, detail: 'update pass started' });
+      } else if (action === 'rcon') {
+        const out = await rconExec(s, String(b.command).slice(0, 300));
+        results.push({ id: s.id, ok: true, detail: (out || '(no output)').slice(0, 400) });
+      }
+    } catch (e) { results.push({ id: s.id, ok: false, detail: e.message }); }
+  }
+  res.json({ ok: true, action, results });
 }));
 
 // Manual-provider settlement: admin saw the Venmo/Cash App payment land, confirm it.

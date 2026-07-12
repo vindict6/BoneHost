@@ -1,7 +1,7 @@
 import cron from 'node-cron';
 import { cfg } from './config.js';
 import { db, audit } from './db.js';
-import { recreateServer } from './docker.js';
+import { recreateServer } from './nodes.js';
 
 /**
  * The update pass is delivered by container recreation: the CS2 image's
@@ -34,13 +34,12 @@ export async function latestVersions() {
  * opts.gameOnly implied when both are false — steamcmd validates CS2 only.
  */
 export async function runUpdatePass(server, opts, actorId = null) {
-  const s = { ...server };
-  s.__extraEnv = [
+  const extraEnv = [
     `FORCE_ADDON_UPDATE=${(opts.metamod || opts.cssharp) ? '1' : '0'}`,
     `ADDON_UPDATE_METAMOD=${opts.metamod ? '1' : '0'}`,
     `ADDON_UPDATE_CSSHARP=${opts.cssharp ? '1' : '0'}`,
   ];
-  await recreateServer(s);
+  await recreateServer(server, extraEnv); // agent rebuilds the container; entrypoint updates on boot
   db.prepare(`UPDATE update_schedules SET last_run=? WHERE server_id=?`).run(Date.now(), server.id);
   audit(actorId, null, 'server.update_pass', server.id, { metamod: !!opts.metamod, cssharp: !!opts.cssharp });
 }

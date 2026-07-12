@@ -1,0 +1,15 @@
+# ── HEAD UNIT (mini PC) ──────────────────────────────────────────────────
+# The panel: web UI, API, SQLite, billing, schedulers. No docker.sock,
+# no game files — it drives game nodes over their agent APIs.
+services:
+  panel:
+    build: ./server
+    container_name: bonehost-panel
+    restart: unless-stopped
+    env_file: .env
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./config.json:/app/config.json:ro
+      - ./web:/app/web:ro
+      - /srv/bonehost-panel:/srv/bonehost-panel    # sqlite db + payment ledgers

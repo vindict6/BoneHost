@@ -115,7 +115,7 @@ function shell(active, inner) {
 function authFrame(inner) {
   app.innerHTML = `<div class="auth-wrap"><div class="auth-card">
     <div class="auth-logo"><b>BONE</b><span>HOST</span></div>
-    <div class="auth-tag">private cs2 hosting · ${esc(state.meta?.public_host || '')}</div>
+    <div class="auth-tag">private cs2 hosting · ${esc((state.meta?.nodes || [])[0]?.public_host || 'bonehost.org')}</div>
     ${inner}</div></div>`;
 }
 
@@ -168,7 +168,7 @@ function statusPill(s, state_) {
 
 async function renderDashboard() {
   shell('servers', `<div class="page-head"><div><h1>Servers</h1>
-    <div class="sub">Your CS2 fleet on ${esc(state.meta?.public_host || 'the host')}.</div></div>
+    <div class="sub">Your CS2 fleet${(state.meta?.nodes || []).length > 1 ? ` across ${state.meta.nodes.length} nodes` : ''}.</div></div>
     <a class="btn primary" href="#/new">＋ New server</a></div>
     <div id="list"><div class="empty">Loading…</div></div>`);
   const draw = async () => {
@@ -182,7 +182,7 @@ async function renderDashboard() {
       <a class="srv-card" href="#/servers/${s.id}">
         <div class="spread"><div class="srv-name">${esc(s.name)}</div>${statusPill(s)}</div>
         <div class="srv-meta">
-          <div class="kv"><div class="k">Address</div><div class="v">${esc(state.meta?.public_host || '')}:${s.game_port}</div></div>
+          <div class="kv"><div class="k">Address</div><div class="v">${esc(s.public_host || '?')}:${s.game_port}</div></div>
           <div class="kv"><div class="k">Slots</div><div class="v">${s.slots}</div></div>
           <div class="kv"><div class="k">Map</div><div class="v">${esc(s.map)}</div></div>
           <div class="kv"><div class="k">CPU · RAM</div><div class="v">${esc(s.cpuset)} · ${s.memory_mb} MB</div></div>
@@ -197,7 +197,7 @@ async function renderDashboard() {
 /* ── server detail ────────────────────────────────────────────────────── */
 const TABS = [
   ['overview', 'Overview'], ['console', 'Console'], ['settings', 'Settings'], ['admins', 'Admins'],
-  ['updates', 'Updates'], ['files', 'Files (SFTP)'], ['billing', 'Billing'], ['danger', 'Danger'],
+  ['updates', 'Updates'], ['files', 'Files & SSH'], ['billing', 'Billing'], ['danger', 'Danger'],
 ];
 
 async function renderServer(id, tab) {
@@ -249,7 +249,7 @@ async function renderServer(id, tab) {
     <div class="stat-tiles">
       <div class="tile"><div class="tk">CPU</div><div class="tv">${st.stats ? st.stats.cpu_pct + '<small> %</small>' : '—'}</div></div>
       <div class="tile"><div class="tk">Memory</div><div class="tv">${st.stats ? `${st.stats.mem_mb}<small> / ${st.stats.mem_limit_mb} MB</small>` : '—'}</div></div>
-      <div class="tile"><div class="tk">Threads</div><div class="tv" style="font-size:13px">${esc(s.cpuset)}</div></div>
+      <div class="tile"><div class="tk">Node · Threads</div><div class="tv" style="font-size:13px">${esc(s.node_id)} · ${esc(s.cpuset)}</div></div>
       <div class="tile"><div class="tk">Port</div><div class="tv">${s.game_port}</div></div>
       <div class="tile"><div class="tk">Slots</div><div class="tv">${s.slots}</div></div>
       <div class="tile"><div class="tk">Paid until</div><div class="tv" style="font-size:13px">${sub ? dOnly(sub.paid_until) : '—'}</div></div>
@@ -451,21 +451,40 @@ async function renderServer(id, tab) {
 
   /* — files — */
   function tabFiles() {
-    const f = d.ftp;
+    const a = d.access;
+    const sshCmd = `ssh -p ${a.port} ${a.user}@${a.host}`;
+    const sftpCmd = `sftp -P ${a.port} ${a.user}@${a.host}`;
     $('#tabbody').innerHTML = `
-    <div class="card"><h3>SFTP access</h3>
-      <p class="mut small" style="margin-top:0">Full access to this server's files — maps, configs, plugin folders. Use FileZilla, WinSCP, or any SFTP client.</p>
-      <div class="grid2">
-        <div class="field"><label>Host</label><div class="secret"><code>${esc(f.host)}</code><button class="btn sm" data-c="${esc(f.host)}">copy</button></div></div>
-        <div class="field"><label>Port</label><div class="secret"><code>${f.port}</code><button class="btn sm" data-c="${f.port}">copy</button></div></div>
-        <div class="field"><label>Username</label><div class="secret"><code>${esc(f.user)}</code><button class="btn sm" data-c="${esc(f.user)}">copy</button></div></div>
-        <div class="field"><label>Password</label><div class="secret"><code id="ftp-pw">••••••••••••</code><button class="btn sm" id="pw-show">show</button><button class="btn sm" data-c="${esc(f.password)}">copy</button></div></div>
+    <div class="grid2">
+      <div class="card"><h3>SSH & SFTP — your own shell</h3>
+        <p class="mut small" style="margin-top:0">Every server ships its own SSH daemon <b>inside the container</b> — you get a real shell and full file access to your server, completely walled off from the host machine and everyone else's servers.</p>
+        <div class="grid2">
+          <div class="field"><label>Host</label><div class="secret"><code>${esc(a.host)}</code><button class="btn sm" data-c="${esc(a.host)}">copy</button></div></div>
+          <div class="field"><label>Port</label><div class="secret"><code>${a.port}</code><button class="btn sm" data-c="${a.port}">copy</button></div></div>
+          <div class="field"><label>User</label><div class="secret"><code>${esc(a.user)}</code><button class="btn sm" data-c="${esc(a.user)}">copy</button></div></div>
+          <div class="field"><label>Password</label><div class="secret"><code id="ssh-pw">••••••••••••</code><button class="btn sm" id="pw-show">show</button><button class="btn sm" data-c="${esc(a.password)}">copy</button></div></div>
+        </div>
+        <div class="field"><label>Terminal</label><div class="secret"><code>${esc(sshCmd)}</code><button class="btn sm" data-c="${esc(sshCmd)}">copy</button></div></div>
+        <div class="field"><label>SFTP (or point FileZilla / WinSCP at the same creds)</label><div class="secret"><code>${esc(sftpCmd)}</code><button class="btn sm" data-c="${esc(sftpCmd)}">copy</button></div></div>
+        <div class="hint">Game files live in <span class="mono">${esc(a.data_path)}</span>. Persistent config: <span class="mono">~/cs2data/panel-cfg/custom.cfg</span> — exec'd after the panel config and survives every update. The host key fingerprint stays stable across updates.</div>
       </div>
-      <div class="hint">Your files live under <span class="mono">${esc(f.path)}</span>. Persistent custom config: <span class="mono">/cs2/game/csgo/cfg/custom.cfg</span> — the panel execs it after its own config, and it survives updates.</div>
+      <div class="card"><h3>SSH public key <span class="faint">(optional)</span></h3>
+        <p class="mut small" style="margin-top:0">Paste a public key to log in without the password. Applied on the next restart or update pass.</p>
+        <div class="field"><textarea id="ssh-key" spellcheck="false" placeholder="ssh-ed25519 AAAA... you@laptop" style="min-height:80px">${a.pubkey_set ? '' : ''}</textarea>
+        ${a.pubkey_set ? '<div class="hint" style="color:var(--ok)">A key is currently installed. Save a new one to replace it, or save empty to remove it.</div>' : '<div class="hint">No key installed — password login only.</div>'}</div>
+        <button class="btn primary" id="ssh-key-save">Save key</button>
+      </div>
     </div>`;
     let shown = false;
-    $('#pw-show').onclick = e => { shown = !shown; $('#ftp-pw').textContent = shown ? f.password : '••••••••••••'; e.target.textContent = shown ? 'hide' : 'show'; };
+    $('#pw-show').onclick = e => { shown = !shown; $('#ssh-pw').textContent = shown ? a.password : '••••••••••••'; e.target.textContent = shown ? 'hide' : 'show'; };
     document.querySelectorAll('[data-c]').forEach(b => b.onclick = () => copy(b.dataset.c));
+    $('#ssh-key-save').onclick = async () => {
+      try {
+        await api(`/servers/${id}/settings`, { method: 'PATCH', body: { ssh_pubkey: $('#ssh-key').value } });
+        toast($('#ssh-key').value.trim() ? 'Key saved — applies on next restart.' : 'Key removed — applies on next restart.', 'ok');
+        await load(); draw();
+      } catch (e) { toast(e.message, 'err'); }
+    };
   }
 
   /* — billing — */
@@ -869,32 +888,50 @@ async function renderAdmin(sub) {
 
   /* overview */
   let ov; try { ov = await api('/admin/overview'); } catch (e) { return toast(e.message, 'err'); }
-  const memPct = Math.round(100 * ov.host.memory.allocated_mb / ov.host.memory.budget_mb);
-  const usedSet = new Set(ov.host.cpu.used);
-  $('#abody').innerHTML = `
-  <div class="grid2">
-    <div class="card"><h3>CPU threads</h3>
-      <div class="threadmap">${Array.from({ length: 32 }, (_, t) => {
-        const inPool = ov.host.cpu.pool.includes(t);
-        return `<div class="th ${usedSet.has(t) ? 'used' : ''} ${inPool ? '' : 'rsv'}" title="${inPool ? (usedSet.has(t) ? 'allocated' : 'free') : 'reserved for host'}">${t}</div>`;
+  const nodeCard = nd => {
+    const memPct = Math.round(100 * nd.memory.allocated_mb / nd.memory.budget_mb);
+    const usedSet = new Set(nd.cpu.used);
+    const maxT = Math.max(...nd.cpu.pool, 0) + 1;
+    const h = nd.health || {};
+    return `<div class="card">
+      <div class="spread"><h3 style="margin:0">${esc(nd.name || nd.id)}</h3>
+        ${h.ok ? '<span class="pill run">agent healthy</span>' : '<span class="pill bad">agent unreachable</span>'}</div>
+      <div class="small mut mono" style="margin:4px 0 12px">${esc(nd.public_host)} · ${esc(nd.agent_url)}${h.servers_running != null ? ` · ${h.servers_running} container${h.servers_running === 1 ? '' : 's'} up` : ''}</div>
+      ${!h.ok && h.error ? `<div class="notice bad" style="margin-bottom:12px">${esc(h.error)}</div>` : ''}
+      <div class="threadmap">${Array.from({ length: maxT }, (_, t) => {
+        const inPool = nd.cpu.pool.includes(t);
+        return `<div class="th ${usedSet.has(t) ? 'used' : ''} ${inPool ? '' : 'rsv'}" title="${inPool ? (usedSet.has(t) ? 'allocated' : 'free') : 'reserved for node OS'}">${t}</div>`;
       }).join('')}</div>
-      <div class="hint">Bright = allocated to a server · dim = reserved for the host/panel. ${ov.host.cpu.free.length} of ${ov.host.cpu.pool.length} pool threads free.</div>
+      <div class="hint">Bright = allocated · dim = reserved for the node's OS/agent/DB. ${nd.cpu.free.length} of ${nd.cpu.pool.length} pool threads free.</div>
+      <div class="spread small mono" style="margin-top:12px"><span>${(nd.memory.allocated_mb / 1024).toFixed(1)} GB allocated</span><span>${(nd.memory.budget_mb / 1024).toFixed(1)} GB budget</span></div>
+      <div class="bar" style="margin-top:6px"><i style="width:${Math.min(memPct, 100)}%"></i></div>
+    </div>`;
+  };
+  $('#abody').innerHTML = `
+  <div class="${ov.nodes.length > 1 ? 'grid2' : ''}">${ov.nodes.map(nodeCard).join('')}</div>
+  <div class="card" style="margin-top:16px"><div class="spread">
+    <div class="small mut">Latest upstream: Metamod <span class="mono">${esc(ov.versions?.metamod || '?')}</span> · CS# <span class="mono">${esc(ov.versions?.cssharp?.tag || '?')}</span></div>
+    <span class="small faint">Select servers below to start, stop, update, or broadcast an RCON command across the fleet.</span></div></div>
+  <div class="card"><div class="spread"><h3 style="margin:0">Fleet</h3><span class="small mut" id="fl-count"></span></div>
+    <div class="row" style="margin:12px 0;padding:10px;background:var(--bg-inset);border:1px solid var(--line);border-radius:9px">
+      <button class="btn sm ok" data-fleet="start">Start</button>
+      <button class="btn sm" data-fleet="restart">Restart</button>
+      <button class="btn sm danger" data-fleet="stop">Stop</button>
+      <span style="width:1px;height:22px;background:var(--line-strong)"></span>
+      <label class="check" style="margin:0"><input type="checkbox" id="fl-mm"> +Metamod</label>
+      <label class="check" style="margin:0"><input type="checkbox" id="fl-css"> +CS#</label>
+      <button class="btn sm primary" data-fleet="update">Run update pass</button>
+      <span style="width:1px;height:22px;background:var(--line-strong)"></span>
+      <input id="fl-rcon" class="mono" placeholder="broadcast rcon — e.g. say Updating in 5 min" style="flex:1;min-width:220px;padding:5px 10px;font-size:12.5px">
+      <button class="btn sm" data-fleet="rcon">Send to selected</button>
     </div>
-    <div class="card"><h3>Memory</h3>
-      <div class="spread small mono"><span>${(ov.host.memory.allocated_mb / 1024).toFixed(1)} GB allocated</span><span>${(ov.host.memory.budget_mb / 1024).toFixed(1)} GB budget</span></div>
-      <div class="bar" style="margin-top:8px"><i style="width:${Math.min(memPct, 100)}%"></i></div>
-      <div class="hint">${(ov.host.memory.host_reserved_mb / 1024).toFixed(1)} GB reserved for host of ${(ov.host.memory.total_mb / 1024).toFixed(0)} GB total.</div>
-      <hr>
-      <div class="small mut">Latest upstream: Metamod <span class="mono">${esc(ov.versions?.metamod || '?')}</span> · CS# <span class="mono">${esc(ov.versions?.cssharp?.tag || '?')}</span></div>
-      <div class="row" style="margin-top:12px"><button class="btn sm" id="sftp-sync">Resync SFTP container</button></div>
-    </div>
-  </div>
-  <div class="card"><h3>Fleet</h3><div class="tbl-wrap"><table>
-    <tr><th>Server</th><th>Owner</th><th>Threads</th><th>RAM</th><th>Port</th><th>Status</th><th>Paid until</th><th></th></tr>
+    <div id="fl-results"></div>
+    <div class="tbl-wrap"><table>
+    <tr><th style="width:28px"><input type="checkbox" id="fl-all"></th><th>Server</th><th>Owner</th><th>Node</th><th>Threads</th><th>RAM</th><th>Port</th><th>Status</th><th>Paid until</th><th></th></tr>
     ${ov.servers.map(s => {
       const u = ov.users.find(x => x.id === s.owner_id);
-      return `<tr><td><a href="#/servers/${s.id}">${esc(s.name)}</a></td><td class="small">${esc(u?.email || s.owner_id)}</td>
-      <td class="mono small">${esc(s.cpuset)}</td><td class="mono small">${s.memory_mb}</td><td class="mono">${s.game_port}</td>
+      return `<tr><td><input type="checkbox" class="fl-pick" value="${s.id}"></td><td><a href="#/servers/${s.id}">${esc(s.name)}</a></td><td class="small">${esc(u?.email || s.owner_id)}</td>
+      <td class="mono small">${esc(s.node_id)}</td><td class="mono small">${esc(s.cpuset)}</td><td class="mono small">${s.memory_mb}</td><td class="mono">${s.game_port}</td>
       <td>${statusPill(s, s.state)}</td>
       <td class="mono small">${s.subscription ? dOnly(s.subscription.paid_until) : '—'}</td>
       <td style="text-align:right;white-space:nowrap">
@@ -903,7 +940,7 @@ async function renderAdmin(sub) {
           : `<button class="btn sm" data-a="suspend" data-id="${s.id}">Suspend</button>`}
         <button class="btn sm" data-a="comp" data-id="${s.id}">Comp</button>
         <button class="btn sm danger" data-a="del" data-id="${s.id}" data-n="${esc(s.name)}">Delete</button></td></tr>`;
-    }).join('') || '<tr><td colspan="8" class="mut">No servers.</td></tr>'}
+    }).join('') || '<tr><td colspan="10" class="mut">No servers.</td></tr>'}
   </table></div></div>
   <div class="grid2">
     <div class="card"><h3>Users</h3><div class="tbl-wrap"><table>
@@ -922,7 +959,37 @@ async function renderAdmin(sub) {
       </table></div></div>
   </div>`;
 
-  $('#sftp-sync').onclick = async () => { try { await api('/admin/sftp/resync', { method: 'POST' }); toast('SFTP container resynced.', 'ok'); } catch (e) { toast(e.message, 'err'); } };
+  const picks = () => [...document.querySelectorAll('.fl-pick:checked')].map(x => x.value);
+  const updateCount = () => { $('#fl-count').textContent = picks().length ? `${picks().length} selected` : ''; };
+  $('#fl-all').onchange = e => { document.querySelectorAll('.fl-pick').forEach(x => x.checked = e.target.checked); updateCount(); };
+  document.querySelectorAll('.fl-pick').forEach(x => x.onchange = updateCount);
+  document.querySelectorAll('[data-fleet]').forEach(b => b.onclick = async () => {
+    const action = b.dataset.fleet;
+    const ids = picks();
+    if (!ids.length) return toast('Select at least one server first (checkboxes on the left).', 'err');
+    const body = { action, server_ids: ids };
+    if (action === 'update') body.opts = { metamod: $('#fl-mm').checked, cssharp: $('#fl-css').checked };
+    if (action === 'rcon') {
+      body.command = $('#fl-rcon').value.trim();
+      if (!body.command) return toast('Type the RCON command to broadcast.', 'err');
+    }
+    const labels = { start: 'Start', stop: 'Stop', restart: 'Restart', update: 'Run an update pass on', rcon: 'Broadcast to' };
+    if (action !== 'rcon' && !await confirmModal(`${labels[action]} ${ids.length} server${ids.length > 1 ? 's' : ''}?`,
+      action === 'update' ? 'Each server restarts and validates via SteamCMD — a few minutes of downtime per server.' : 'Applies to every selected server.',
+      labels[action], action === 'stop')) return;
+    b.disabled = true;
+    try {
+      const r = await api('/admin/fleet', { method: 'POST', body });
+      const okN = r.results.filter(x => x.ok).length;
+      toast(`${action}: ${okN}/${r.results.length} succeeded.`, okN === r.results.length ? 'ok' : 'err');
+      $('#fl-results').innerHTML = `<div class="card" style="margin-bottom:12px;padding:14px"><div class="spread"><h3 style="margin:0;font-size:13px">Results — ${esc(action)}</h3><button class="btn sm" id="fl-clear">dismiss</button></div>
+        <div class="tbl-wrap" style="margin-top:8px"><table>${r.results.map(x =>
+          `<tr><td class="mono small">${esc(x.id)}</td><td>${x.ok ? '<span class="pill run">ok</span>' : '<span class="pill bad">failed</span>'}</td><td class="mono small" style="white-space:pre-wrap">${esc(x.detail)}</td></tr>`).join('')}</table></div></div>`;
+      $('#fl-clear').onclick = () => { $('#fl-results').innerHTML = ''; };
+      if (action !== 'rcon') setTimeout(() => renderAdmin('overview'), 400);
+    } catch (e) { toast(e.message, 'err'); }
+    finally { b.disabled = false; }
+  });
   $('#mint').onclick = async () => {
     try { const { code } = await api('/admin/invites', { method: 'POST' }); copy(code, `Invite ${code} copied`); renderAdmin('overview'); }
     catch (e) { toast(e.message, 'err'); }

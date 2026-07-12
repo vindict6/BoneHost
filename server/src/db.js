@@ -2,9 +2,9 @@ import Database from 'better-sqlite3';
 import fs from 'node:fs';
 import path from 'node:path';
 import bcrypt from 'bcryptjs';
-import { dataRoot, serversRoot, ledgerDir, env } from './config.js';
+import { cfg, dataRoot, ledgerDir, env } from './config.js';
 
-for (const d of [dataRoot, serversRoot, ledgerDir]) fs.mkdirSync(d, { recursive: true });
+for (const d of [dataRoot, ledgerDir]) fs.mkdirSync(d, { recursive: true });
 
 export const db = new Database(path.join(dataRoot, 'bonehost.sqlite'));
 db.pragma('journal_mode = WAL');
@@ -28,6 +28,7 @@ CREATE TABLE IF NOT EXISTS invites (
 );
 CREATE TABLE IF NOT EXISTS servers (
   id TEXT PRIMARY KEY,                          -- short slug, also docker name suffix
+  node_id TEXT NOT NULL DEFAULT '',             -- which game node runs this server
   name TEXT NOT NULL,
   owner_id INTEGER NOT NULL REFERENCES users(id),
   slots INTEGER NOT NULL,
@@ -114,6 +115,28 @@ CREATE TABLE IF NOT EXISTS notices (
   read INTEGER NOT NULL DEFAULT 0
 );
 `);
+
+// ---- lightweight migrations for databases created before multi-node ----
+try { db.exec(`ALTER TABLE servers ADD COLUMN node_id TEXT NOT NULL DEFAULT ''`); } catch { /* exists */ }
+try { db.exec(`ALTER TABLE servers ADD COLUMN ssh_port INTEGER NOT NULL DEFAULT 0`); } catch { /* exists */ }
+try { db.exec(`ALTER TABLE servers ADD COLUMN ssh_pubkey TEXT NOT NULL DEFAULT ''`); } catch { /* exists */ }
+{
+  // Backfill any pre-node servers onto the first configured node.
+  const first = (cfg.nodes || [])[0];
+  if (first) db.prepare(`UPDATE servers SET node_id=? WHERE node_id=''`).run(first.id);
+
+  // Backfill SSH ports for servers created before per-container SSH.
+  for (const node of (cfg.nodes || [])) {
+    if (!node.ssh_port_range) continue;
+    const [lo, hi] = node.ssh_port_range;
+    const used = new Set(db.prepare(`SELECT ssh_port FROM servers WHERE node_id=? AND status != 'deleted' AND ssh_port > 0`).all(node.id).map(r => r.ssh_port));
+    for (const row of db.prepare(`SELECT id FROM servers WHERE node_id=? AND status != 'deleted' AND ssh_port=0`).all(node.id)) {
+      for (let p = lo; p <= hi; p++) {
+        if (!used.has(p)) { db.prepare(`UPDATE servers SET ssh_port=? WHERE id=?`).run(p, row.id); used.add(p); break; }
+      }
+    }
+  }
+}
 
 // ---- seed admin ----
 const adminCount = db.prepare(`SELECT COUNT(*) c FROM users WHERE role='admin'`).get().c;

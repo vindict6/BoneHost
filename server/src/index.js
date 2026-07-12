@@ -11,8 +11,7 @@ import { serverRoutes } from './routes/servers.js';
 import { adminRoutes } from './routes/admin.js';
 import { verifyWebhook, handleWebhook, startBillingCron } from './billing.js';
 import { startUpdateScheduler } from './updates.js';
-import { pullBaseImages, syncSftp } from './docker.js';
-import { allLiveServers } from './cs2.js';
+import { warmNodes, nodes, nodeHealth } from './nodes.js';
 
 const app = express();
 app.disable('x-powered-by');
@@ -65,8 +64,7 @@ app.get('/api/meta', (req, res) => res.json({
     cashapp: cfg.billing.manual?.cashapp_cashtag || null,
     note: cfg.billing.manual?.note || null,
   },
-  sftp_port: cfg.network.sftp_port,
-  public_host: cfg.network.public_host,
+  nodes: (cfg.nodes || []).map(n => ({ id: n.id, name: n.name, public_host: n.public_host })),
   timezone: cfg.updates.scheduler_timezone,
   default_map: cfg.cs2.default_map,
 }));
@@ -86,8 +84,11 @@ app.listen(port, async () => {
   console.log(`[bonehost] panel listening on :${port}`);
   db.pragma('optimize');
   if (process.env.SKIP_DOCKER !== '1') {
-    try { await pullBaseImages(); await syncSftp(allLiveServers()); }
-    catch (e) { console.warn(`[bonehost] docker warm-up skipped: ${e.message}`); }
+    warmNodes();
+    for (const n of nodes()) {
+      const h = await nodeHealth(n);
+      console.log(`[bonehost] node ${n.id} (${n.agent_url}): ${h.ok ? 'healthy' : `UNREACHABLE — ${h.error || ''}`}`);
+    }
   }
   startBillingCron();
   startUpdateScheduler();

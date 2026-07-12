@@ -3,9 +3,8 @@ import { cfg, priceCents } from '../config.js';
 import { db, audit } from '../db.js';
 import { requireAuth, loadOwnedServer } from '../auth.js';
 import { provisionServer, sanitizeCvars, writeServerFiles, applyConfigChanges, destroyServer } from '../cs2.js';
-import { startServer, stopServer, restartServer, containerState, tailLogs } from '../docker.js';
+import { startServer, stopServer, restartServer, containerState, tailLogs, rconExec, nodeFor } from '../nodes.js';
 import { resolveSteamId } from '../steam.js';
-import { rcon } from '../rcon.js';
 import { createSubscription, createRenewalInvoice, getSubscription, declarePaid } from '../billing.js';
 import { latestVersions, runUpdatePass } from '../updates.js';
 
@@ -75,8 +74,11 @@ serverRoutes.get('/:id', loadOwnedServer, wrap(async (req, res) => {
   res.json({
     server: { ...publicServer(s), rcon_password: s.rcon_password, cfg_overrides: JSON.parse(s.cfg_overrides), gslt_set: !!s.gslt },
     state, subscription: sub, schedule, admins, transactions: txs,
-    connect: `connect ${cfg.network.public_host}:${s.game_port}${s.sv_password ? `; password ${s.sv_password}` : ''}`,
-    ftp: { host: cfg.network.public_host, port: cfg.network.sftp_port, protocol: 'sftp', user: s.ftp_user, password: s.ftp_password, path: '/cs2' },
+    connect: `connect ${nodeFor(s).public_host}:${s.game_port}${s.sv_password ? `; password ${s.sv_password}` : ''}`,
+    access: {
+      host: nodeFor(s).public_host, port: s.ssh_port, user: 'steam', password: s.ftp_password,
+      data_path: '~/cs2data', pubkey_set: !!(s.ssh_pubkey || '').trim(),
+    },
     default_cfg: cfg.cs2.default_cfg,
   });
 }));
@@ -118,7 +120,7 @@ serverRoutes.post('/:id/rcon', loadOwnedServer, wrap(async (req, res) => {
   guardPaid(req.server);
   const cmd = String(req.body?.command || '').slice(0, 300);
   if (!cmd) throw new Error('Enter a command.');
-  const out = await rcon('127.0.0.1', req.server.game_port, req.server.rcon_password, cmd);
+  const out = await rconExec(req.server, cmd);
   audit(req.user.id, req.ip, 'server.rcon', req.server.id, { cmd });
   res.json({ output: out || '(no output)' });
 }));
@@ -140,13 +142,15 @@ serverRoutes.patch('/:id/settings', loadOwnedServer, wrap(async (req, res) => {
     install_cssharp: b.install_cssharp !== undefined ? (b.install_cssharp ? 1 : 0) : s.install_cssharp,
     install_fakercon: b.install_fakercon !== undefined ? (b.install_fakercon ? 1 : 0) : s.install_fakercon,
     install_simpleadmin: b.install_simpleadmin !== undefined ? (b.install_simpleadmin ? 1 : 0) : s.install_simpleadmin,
+    ssh_pubkey: b.ssh_pubkey !== undefined ? sanitizePubkey(b.ssh_pubkey) : s.ssh_pubkey,
   };
   db.prepare(`UPDATE servers SET name=@name, map=@map, game_type=@game_type, game_mode=@game_mode,
     sv_password=@sv_password, gslt=@gslt, cfg_overrides=@cfg_overrides, install_metamod=@install_metamod,
-    install_cssharp=@install_cssharp, install_fakercon=@install_fakercon, install_simpleadmin=@install_simpleadmin
+    install_cssharp=@install_cssharp, install_fakercon=@install_fakercon, install_simpleadmin=@install_simpleadmin,
+    ssh_pubkey=@ssh_pubkey
     WHERE id=@id`).run({ ...updates, id: s.id });
   const fresh = db.prepare(`SELECT * FROM servers WHERE id=?`).get(s.id);
-  if (b.apply_now) await applyConfigChanges(fresh); else writeServerFiles(fresh);
+  if (b.apply_now) await applyConfigChanges(fresh); else await writeServerFiles(fresh);
   audit(req.user.id, req.ip, 'server.settings', s.id, { applied: !!b.apply_now });
   res.json({ ok: true, applied: !!b.apply_now });
 }));
@@ -157,14 +161,14 @@ serverRoutes.post('/:id/admins', loadOwnedServer, wrap(async (req, res) => {
   const flags = String(req.body?.flags || '@css/generic').slice(0, 200);
   db.prepare(`INSERT OR REPLACE INTO server_admins (server_id, steamid64, label, flags) VALUES (?,?,?,?)`)
     .run(req.server.id, r.steamid64, String(req.body?.label || r.persona || '').slice(0, 60), flags);
-  writeServerFiles(db.prepare(`SELECT * FROM servers WHERE id=?`).get(req.server.id));
+  await writeServerFiles(db.prepare(`SELECT * FROM servers WHERE id=?`).get(req.server.id));
   audit(req.user.id, req.ip, 'server.admin_added', req.server.id, { steamid64: r.steamid64 });
   res.json({ ok: true, steamid64: r.steamid64, persona: r.persona, note: 'Applied on next map change or restart.' });
 }));
 
 serverRoutes.delete('/:id/admins/:steamid', loadOwnedServer, wrap(async (req, res) => {
   db.prepare(`DELETE FROM server_admins WHERE server_id=? AND steamid64=?`).run(req.server.id, req.params.steamid);
-  writeServerFiles(db.prepare(`SELECT * FROM servers WHERE id=?`).get(req.server.id));
+  await writeServerFiles(db.prepare(`SELECT * FROM servers WHERE id=?`).get(req.server.id));
   audit(req.user.id, req.ip, 'server.admin_removed', req.server.id, { steamid64: req.params.steamid });
   res.json({ ok: true });
 }));
@@ -225,13 +229,24 @@ serverRoutes.delete('/:id', loadOwnedServer, wrap(async (req, res) => {
   res.json({ ok: true });
 }));
 
+function sanitizePubkey(v) {
+  const k = String(v || '').trim();
+  if (!k) return '';
+  if (!/^(ssh-(ed25519|rsa)|ecdsa-sha2-\S+|sk-\S+)\s+[A-Za-z0-9+/=]+/.test(k) || k.length > 4000) {
+    throw new Error('That does not look like an SSH public key (expected e.g. "ssh-ed25519 AAAA…").');
+  }
+  return k.split('\n')[0];
+}
+
 function clamp(v, lo, hi, dflt) { const n = parseInt(v, 10); return Number.isInteger(n) ? Math.min(Math.max(n, lo), hi) : dflt; }
 
 function publicServer(s) {
+  let public_host = null;
+  try { public_host = nodeFor(s).public_host; } catch { /* node removed from config */ }
   return {
-    id: s.id, name: s.name, owner_id: s.owner_id, slots: s.slots, game_port: s.game_port,
+    id: s.id, name: s.name, owner_id: s.owner_id, node_id: s.node_id, public_host, slots: s.slots, game_port: s.game_port,
     cpuset: s.cpuset, memory_mb: s.memory_mb, map: s.map, game_type: s.game_type, game_mode: s.game_mode,
-    status: s.status, suspended_reason: s.suspended_reason, created_at: s.created_at,
+    ssh_port: s.ssh_port, status: s.status, suspended_reason: s.suspended_reason, created_at: s.created_at,
     install_metamod: !!s.install_metamod, install_cssharp: !!s.install_cssharp,
     install_fakercon: !!s.install_fakercon, install_simpleadmin: !!s.install_simpleadmin,
     sv_password_set: !!s.sv_password,

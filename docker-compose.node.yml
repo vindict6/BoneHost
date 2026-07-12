@@ -1,0 +1,33 @@
+# ── GAME NODE (Ryzen 7950X — and every future machine) ──────────────────
+# The agent owns Docker, game files, SFTP, RCON and the SimpleAdmin MariaDB
+# on this box. The panel talks to it on :9090 with a bearer token.
+services:
+  agent:
+    build: ./agent
+    container_name: bonehost-agent
+    restart: unless-stopped
+    environment:
+      - AGENT_TOKEN=${AGENT_TOKEN:?set AGENT_TOKEN in .env}
+      - DATA_ROOT=/srv/bonehost
+    ports:
+      # Bound to the node's Tailscale IP ONLY. Docker-published ports bypass UFW,
+      # so this binding — not the firewall — is what keeps the agent off the internet.
+      - "${TAILSCALE_IP:?set TAILSCALE_IP in .env (tailscale ip -4)}:9090:9090"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - /srv/bonehost:/srv/bonehost
+    networks: [bonehost]
+
+  mariadb:
+    image: mariadb:11
+    container_name: bonehost-mariadb
+    restart: unless-stopped
+    environment:
+      - MARIADB_ROOT_PASSWORD=${MARIADB_ROOT_PASSWORD:?set MARIADB_ROOT_PASSWORD in .env}
+    volumes:
+      - /srv/bonehost/mariadb:/var/lib/mysql
+    networks: [bonehost]
+
+networks:
+  bonehost:
+    name: bonehost           # game containers + sftp join this network; agent reaches them by name
