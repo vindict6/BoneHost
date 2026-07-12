@@ -62,7 +62,7 @@ jobs:
             git fetch origin main
             git reset --hard origin/main
             docker compose -f docker-compose.panel.yml up -d --build
-            sudo /opt/bonehost/scripts/firewall-panel.sh
+            sudo bash /opt/bonehost/scripts/firewall-panel.sh
             docker image prune -f
           REMOTE
 
@@ -98,7 +98,7 @@ jobs:
             git reset --hard origin/main
             docker build -t bonehost/cs2:latest images/cs2
             docker compose -f docker-compose.node.yml up -d --build
-            sudo /opt/bonehost/scripts/firewall-node.sh
+            sudo bash /opt/bonehost/scripts/firewall-node.sh
             docker image prune -f
           REMOTE
 
