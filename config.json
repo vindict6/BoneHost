@@ -1,0 +1,121 @@
+{
+  "panel": {
+    "name": "BoneHost",
+    "url": "https://bonehost.org",
+    "port": 8080,
+    "data_root": "/srv/bonehost"
+  },
+  "cpu": {
+    "comment": "Ryzen 9 7950X: 16 cores / 32 threads. Logical thread N and N+16 are SMT siblings. Threads listed in `pool` are the ONLY threads game containers may use; everything else stays reserved for the OS, the panel, SFTP and MariaDB.",
+    "pool": [
+      4,
+      20,
+      5,
+      21,
+      6,
+      22,
+      7,
+      23,
+      8,
+      24,
+      9,
+      25,
+      10,
+      26,
+      11,
+      27,
+      12,
+      28,
+      13,
+      29,
+      14,
+      30,
+      15,
+      31
+    ],
+    "smt_sibling_offset": 16,
+    "threads_per_server": 4,
+    "pin_sibling_pairs": true
+  },
+  "memory": {
+    "total_mb": 65536,
+    "host_reserved_mb": 12288,
+    "per_server_mb": 8192,
+    "swap": "disabled (MemorySwap is pinned to Memory limit)"
+  },
+  "network": {
+    "game_port_range": [
+      27015,
+      27114
+    ],
+    "sftp_port": 2022,
+    "public_host": "bonehost.org"
+  },
+  "cs2": {
+    "image": "bonehost/cs2:latest",
+    "update_on_start": true,
+    "default_map": "de_dust2",
+    "default_game_mode": {
+      "game_type": 0,
+      "game_mode": 1,
+      "comment": "0/1 = competitive"
+    },
+    "default_cfg": {
+      "hostname": "BoneHost | Competitive",
+      "sv_lan": "0",
+      "sv_cheats": "0",
+      "mp_autoteambalance": "0",
+      "mp_limitteams": "0",
+      "mp_overtime_enable": "1",
+      "mp_maxrounds": "24",
+      "mp_freezetime": "15",
+      "mp_match_end_restart": "1",
+      "sv_deadtalk": "1",
+      "sv_full_alltalk": "0",
+      "sv_hibernate_when_empty": "1",
+      "sv_hibernate_postgame_delay": "300",
+      "tv_enable": "1",
+      "tv_delay": "105"
+    }
+  },
+  "addons": {
+    "metamod": {
+      "branch": "2.0",
+      "latest_index": "https://mms.alliedmods.net/mmsdrop/2.0/mmsource-latest-linux"
+    },
+    "counterstrikesharp": {
+      "repo": "roflmuffin/CounterStrikeSharp",
+      "asset_match": "with-runtime-linux"
+    },
+    "default_plugins": [
+      {
+        "name": "FakeRcon",
+        "repo": "kus/cs2-fakercon",
+        "asset_match": ".zip",
+        "comment": "Restores RCON on CS2. Verify the repo slug once before first deploy; it is fetched from the GitHub Releases API at install time."
+      },
+      {
+        "name": "CS2-SimpleAdmin",
+        "repo": "daffyyyy/CS2-SimpleAdmin",
+        "asset_match": ".zip",
+        "needs_database": true
+      }
+    ]
+  },
+  "billing": {
+    "currency": "USD",
+    "price_per_slot_cents_monthly": 2000,
+    "yearly_months_charged": 10,
+    "grace_days": 3,
+    "renewal_notice_days": 7,
+    "provider": "manual",
+    "manual": {
+      "venmo_username": "your-venmo-username",
+      "cashapp_cashtag": "YourCashtag",
+      "note": "Put the invoice code in the payment note so payments match up fast."
+    }
+  },
+  "updates": {
+    "scheduler_timezone": "America/Denver"
+  }
+}

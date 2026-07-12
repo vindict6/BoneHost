@@ -1,0 +1,29 @@
+services:
+  panel:
+    build: ./server
+    container_name: bonehost-panel
+    restart: unless-stopped
+    env_file: .env
+    ports:
+      - "8080:8080"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock   # panel orchestrates game containers
+      - ./config.json:/app/config.json:ro
+      - ./web:/app/web:ro
+      - /srv/bonehost:/srv/bonehost                  # server data, sqlite db, ledgers
+    depends_on:
+      - mariadb
+
+  mariadb:
+    image: mariadb:11
+    container_name: bonehost-mariadb
+    restart: unless-stopped
+    environment:
+      - MARIADB_ROOT_PASSWORD=${MARIADB_ROOT_PASSWORD}
+    volumes:
+      - /srv/bonehost/mariadb:/var/lib/mysql
+    # not published to the host network; game containers reach it via the docker bridge
+
+networks:
+  default:
+    name: bonehost
